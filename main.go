@@ -20,7 +20,8 @@ import (
 type CLI struct {
 	cw *cloudwatchlogs.Client
 
-	Count int `arg:"" help:"Number of log groups to create"`
+	Count    int           `arg:"" help:"Number of log groups to create"`
+	Duration time.Duration `name:"duration" default:"10m" help:"How long to send log messages"`
 }
 
 func main() {
@@ -66,8 +67,14 @@ func (cli *CLI) Run() error {
 		close(stopCh)
 	}()
 
+	ctx, cancel := context.WithTimeout(context.Background(), cli.Duration)
+	defer cancel()
+
 	for {
 		select {
+		case <-ctx.Done():
+			fmt.Printf("Provided duration (%s) elapsed, stopping...\n", cli.Duration)
+			return nil
 		case <-stopCh:
 			fmt.Println("Stopping...")
 			return nil
