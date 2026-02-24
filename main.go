@@ -3,8 +3,9 @@ package main
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
 	"fmt"
-	"math/rand/v2"
+	"math/big"
 	"os"
 	"os/signal"
 	"time"
@@ -22,6 +23,11 @@ type CLI struct {
 
 	Count    int           `arg:"" help:"Number of log groups to create"`
 	Duration time.Duration `name:"duration" default:"10m" help:"How long to send log messages"`
+}
+
+type logDetails struct {
+	name  string
+	seqId int
 }
 
 func main() {
@@ -80,10 +86,15 @@ func (cli *CLI) Run() error {
 			return nil
 		case <-shutdownCh:
 			return nil
-		default:
-			time.Sleep(randomDuration())
-			lg := randomLogGroup(logGroups)
-			err := cli.logMessage(lg, uuid.NewString())
+		case <-time.After(randomDuration()):
+			i, err := rand.Int(rand.Reader, big.NewInt(int64(len(logGroups))))
+			if err != nil {
+				return fmt.Errorf("getting random index for log groups: %w", err)
+			}
+
+			det := logGroups[i.Int64()]
+			det.seqId++
+			err = cli.logMessage(det, uuid.NewString())
 			if err != nil {
 				return fmt.Errorf("logging message: %w", err)
 			}
@@ -91,8 +102,8 @@ func (cli *CLI) Run() error {
 	}
 }
 
-func (cli *CLI) createLogGroups(numOfLogGroups int) ([]string, error) {
-	var names []string
+func (cli *CLI) createLogGroups(numOfLogGroups int) ([]*logDetails, error) {
+	var names []*logDetails
 	for i := range numOfLogGroups {
 		name := fmt.Sprintf("log-group-%d", i+1)
 		_, err := cli.cw.CreateLogGroup(context.Background(), &cloudwatchlogs.CreateLogGroupInput{
@@ -106,7 +117,7 @@ func (cli *CLI) createLogGroups(numOfLogGroups int) ([]string, error) {
 			return names, fmt.Errorf("could not create log group %s: %v", name, err)
 		}
 
-		names = append(names, name)
+		names = append(names, &logDetails{name: name})
 		_, err = cli.cw.CreateLogStream(context.Background(), &cloudwatchlogs.CreateLogStreamInput{
 			LogGroupName:  aws.String(name),
 			LogStreamName: aws.String("DEFAULT"),
@@ -119,26 +130,21 @@ func (cli *CLI) createLogGroups(numOfLogGroups int) ([]string, error) {
 	return names, nil
 }
 
-func (cli *CLI) deleteLogGroups(names []string) {
+func (cli *CLI) deleteLogGroups(details []*logDetails) {
 	fmt.Println("Cleaning up log groups...")
-	for _, logGroupName := range names {
+	for _, det := range details {
 		_, err := cli.cw.DeleteLogGroup(context.Background(), &cloudwatchlogs.DeleteLogGroupInput{
-			LogGroupName: aws.String(logGroupName),
+			LogGroupName: aws.String(det.name),
 		})
 		if err != nil {
-			fmt.Printf("ERROR could not delete log group %s: %s", logGroupName, err)
+			fmt.Printf("ERROR could not delete log group %s: %s", det.name, err)
 		}
 	}
 }
 
-func randomLogGroup(logGroups []string) string {
-	i := rand.IntN(len(logGroups))
-	return logGroups[i]
-}
-
-func (cli *CLI) logMessage(logGroup, msg string) error {
+func (cli *CLI) logMessage(det *logDetails, msg string) error {
 	now := time.Now()
-	fmt.Printf("%s [%s] %s\n", now.Format(time.RFC3339), logGroup, msg)
+	fmt.Printf("%s [%s] message-%d %s\n", now.Format(time.RFC3339), det.name, det.seqId, msg)
 	_, err := cli.cw.PutLogEvents(context.Background(), &cloudwatchlogs.PutLogEventsInput{
 		LogEvents: []types.InputLogEvent{
 			{
@@ -146,7 +152,7 @@ func (cli *CLI) logMessage(logGroup, msg string) error {
 				Timestamp: aws.Int64(now.UnixMilli()),
 			},
 		},
-		LogGroupName:  aws.String(logGroup),
+		LogGroupName:  aws.String(det.name),
 		LogStreamName: aws.String("DEFAULT"),
 	})
 	if err != nil {
@@ -158,9 +164,12 @@ func (cli *CLI) logMessage(logGroup, msg string) error {
 
 // randomDuration returns a random duration between 0.5 and 1.0 second
 func randomDuration() time.Duration {
-	minD := 0.5
-	maxD := 1.0
+	const precision = 1_000_000
+	n, err := rand.Int(rand.Reader, big.NewInt(precision))
+	if err != nil {
+		panic(err)
+	}
 
-	randomFloat := minD + rand.Float64()*(maxD-minD)
+	randomFloat := 0.5 + float64(n.Int64())/float64(precision)*0.5
 	return time.Duration(randomFloat * float64(time.Second))
 }
