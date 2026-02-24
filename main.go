@@ -144,7 +144,8 @@ func (cli *CLI) deleteLogGroups(details []*logDetails) {
 
 func (cli *CLI) logMessage(det *logDetails, msg string) error {
 	now := time.Now()
-	fmt.Printf("%s [%s] message-%d %s\n", now.Format(time.RFC3339), det.name, det.seqId, msg)
+	msg = fmt.Sprintf("message-%d %s", det.seqId, msg)
+	fmt.Printf("%s [%s] %s\n", now.Format(time.RFC3339), det.name, msg)
 	_, err := cli.cw.PutLogEvents(context.Background(), &cloudwatchlogs.PutLogEventsInput{
 		LogEvents: []types.InputLogEvent{
 			{
